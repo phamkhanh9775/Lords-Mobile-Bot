@@ -5,7 +5,7 @@ import time
 import threading
 
 
-ADB = r"C:\platform-tools\adb.exe"
+ADB = r"D:\Lords Mobile Bot\platform-tools\adb.exe"
 
 
 class ADBDevice:
