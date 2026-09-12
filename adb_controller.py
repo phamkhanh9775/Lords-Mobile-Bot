@@ -1,8 +1,8 @@
 import subprocess
 import cv2
 import numpy as np
-import time
 import threading
+import re
 
 
 ADB = r"D:\Lords Mobile Bot\platform-tools\adb.exe"
@@ -12,21 +12,44 @@ class ADBDevice:
     def __init__(self, serial):
         self.serial = serial
 
+        # Mỗi thiết bị có một lock riêng.
+        # Đảm bảo không có nhiều thread cùng thao tác
+        # trên cùng một điện thoại tại cùng thời điểm.
+        self.lock = threading.RLock()
+
     # ==========================================================
     # BASIC ADB
     # ==========================================================
 
-    def _run(self, args, timeout=30, capture_output=True):
-        cmd = [ADB, "-s", self.serial] + args
+    def _run(self, args, timeout=30):
+        cmd = [
+            ADB,
+            "-s",
+            self.serial
+        ] + args
 
-        result = subprocess.run(
-            cmd,
-            capture_output=capture_output,
-            text=False,
-            timeout=timeout
-        )
+        try:
+            return subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout
+            )
 
-        return result
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"[{self.serial}] "
+                f"ADB command timeout: {' '.join(args)}"
+            )
+
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"ADB not found: {ADB}"
+            )
+
+    # ==========================================================
+    # SHELL
+    # ==========================================================
 
     def shell(self, command, timeout=30):
         result = self._run(
@@ -35,90 +58,149 @@ class ADBDevice:
         )
 
         if result.returncode != 0:
+
+            error = result.stderr.decode(
+                errors="ignore"
+            ).strip()
+
             raise RuntimeError(
-                f"[{self.serial}] ADB shell error: "
-                f"{result.stderr.decode(errors='ignore')}"
+                f"[{self.serial}] "
+                f"ADB shell error: {error}"
             )
 
-        return result.stdout.decode(errors="ignore").strip()
+        return result.stdout.decode(
+            errors="ignore"
+        ).strip()
 
     # ==========================================================
     # SCREENSHOT
     # ==========================================================
 
     def screenshot(self):
-        """
-        Chụp màn hình điện thoại bằng:
-        adb exec-out screencap -p
-        """
 
-        result = self._run(
-            ["exec-out", "screencap", "-p"],
-            timeout=15
-        )
+        with self.lock:
 
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"[{self.serial}] Screenshot failed."
+            if not self.is_online():
+                raise RuntimeError(
+                    f"[{self.serial}] "
+                    f"Device is offline."
+                )
+
+            result = self._run(
+                [
+                    "exec-out",
+                    "screencap",
+                    "-p"
+                ],
+                timeout=15
             )
 
-        image = np.frombuffer(result.stdout, dtype=np.uint8)
+            if result.returncode != 0:
 
-        frame = cv2.imdecode(
-            image,
-            cv2.IMREAD_COLOR
-        )
+                error = result.stderr.decode(
+                    errors="ignore"
+                ).strip()
 
-        if frame is None:
-            raise RuntimeError(
-                f"[{self.serial}] Cannot decode screenshot."
+                raise RuntimeError(
+                    f"[{self.serial}] "
+                    f"Screenshot failed: {error}"
+                )
+
+            if not result.stdout:
+                raise RuntimeError(
+                    f"[{self.serial}] "
+                    f"Screenshot returned empty data."
+                )
+
+            image = np.frombuffer(
+                result.stdout,
+                dtype=np.uint8
             )
 
-        return frame
+            frame = cv2.imdecode(
+                image,
+                cv2.IMREAD_COLOR
+            )
+
+            if frame is None:
+                raise RuntimeError(
+                    f"[{self.serial}] "
+                    f"Cannot decode screenshot."
+                )
+
+            return frame
 
     # ==========================================================
     # TOUCH
     # ==========================================================
 
     def tap(self, x, y):
-        self.shell(
-            f"input tap {int(x)} {int(y)}"
-        )
 
-    def swipe(self, x1, y1, x2, y2, duration=400):
-        self.shell(
-            f"input swipe "
-            f"{int(x1)} {int(y1)} "
-            f"{int(x2)} {int(y2)} "
-            f"{int(duration)}"
-        )
+        with self.lock:
+            self.shell(
+                f"input tap "
+                f"{int(x)} {int(y)}"
+            )
+
+    def swipe(
+        self,
+        x1,
+        y1,
+        x2,
+        y2,
+        duration=400
+    ):
+
+        with self.lock:
+            self.shell(
+                f"input swipe "
+                f"{int(x1)} {int(y1)} "
+                f"{int(x2)} {int(y2)} "
+                f"{int(duration)}"
+            )
 
     def press_back(self):
-        self.shell("input keyevent KEYCODE_BACK")
+
+        with self.lock:
+            self.shell(
+                "input keyevent KEYCODE_BACK"
+            )
 
     def press_home(self):
-        self.shell("input keyevent KEYCODE_HOME")
+
+        with self.lock:
+            self.shell(
+                "input keyevent KEYCODE_HOME"
+            )
 
     # ==========================================================
     # APP
     # ==========================================================
 
     def launch_package(self, package_name):
-        self.shell(
-            f"monkey -p {package_name} "
-            f"-c android.intent.category.LAUNCHER 1"
-        )
+
+        with self.lock:
+            self.shell(
+                f"monkey -p {package_name} "
+                f"-c android.intent.category.LAUNCHER 1"
+            )
+
+    # ==========================================================
+    # ONLINE CHECK
+    # ==========================================================
 
     def is_online(self):
+
         try:
+
             result = self._run(
                 ["get-state"],
                 timeout=5
             )
 
             return (
-                result.returncode == 0 and
-                b"device" in result.stdout
+                result.returncode == 0
+                and result.stdout.strip() == b"device"
             )
 
         except Exception:
@@ -129,22 +211,48 @@ class ADBDevice:
     # ==========================================================
 
     def size(self):
-        output = self.shell("wm size")
-
-        # Example:
-        # Physical size: 1080x1920
-
-        if "x" not in output:
-            return None
 
         try:
-            value = output.split(":")[-1].strip()
-            width, height = value.split("x")
 
-            return int(width), int(height)
+            output = self.shell(
+                "wm size"
+            )
 
-        except Exception:
-            return None
+            # Ưu tiên Physical size
+            match = re.search(
+                r"Physical size:\s*(\d+)x(\d+)",
+                output
+            )
+
+            if match:
+
+                return (
+                    int(match.group(1)),
+                    int(match.group(2))
+                )
+
+            # Nếu không có Physical size,
+            # tìm kích thước xấu nhất còn lại.
+            match = re.search(
+                r"(\d+)x(\d+)",
+                output
+            )
+
+            if match:
+
+                return (
+                    int(match.group(1)),
+                    int(match.group(2))
+                )
+
+        except Exception as e:
+
+            print(
+                f"[{self.serial}] "
+                f"Cannot get screen size: {e}"
+            )
+
+        return None
 
 
 # ==============================================================
@@ -155,35 +263,80 @@ class ADBManager:
 
     @staticmethod
     def list_devices():
-        """
-        Trả về danh sách serial của tất cả thiết bị đang online.
-        """
 
-        result = subprocess.run(
-            [ADB, "devices"],
-            capture_output=True,
-            text=True
-        )
+        try:
+
+            result = subprocess.run(
+                [
+                    ADB,
+                    "devices"
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=10
+            )
+
+        except FileNotFoundError:
+
+            print(
+                f"ADB not found: {ADB}"
+            )
+
+            return []
+
+        except subprocess.TimeoutExpired:
+
+            print(
+                "ADB devices command timeout."
+            )
+
+            return []
 
         if result.returncode != 0:
+
+            print(
+                "ADB devices error:",
+                result.stderr
+            )
+
             return []
 
         devices = []
 
         for line in result.stdout.splitlines():
 
-            if "\tdevice" in line:
+            line = line.strip()
 
-                serial = line.split("\t")[0].strip()
+            if not line:
+                continue
 
-                if serial:
-                    devices.append(serial)
+            if line.startswith(
+                "List of devices attached"
+            ):
+                continue
+
+            parts = line.split()
+
+            if len(parts) >= 2:
+
+                serial = parts[0]
+                status = parts[1]
+
+                # Chỉ lấy device đang online
+                if status == "device":
+
+                    devices.append(
+                        serial
+                    )
 
         return devices
 
     @staticmethod
     def get_devices():
+
         return [
             ADBDevice(serial)
-            for serial in ADBManager.list_devices()
+            for serial
+            in ADBManager.list_devices()
         ]

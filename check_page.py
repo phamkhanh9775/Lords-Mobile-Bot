@@ -98,10 +98,13 @@ def get_current_page(device: ADBDevice):
     return None
 
 
-def escape_to_valid_page(device: ADBDevice):
+def escape_to_valid_page(
+    device: ADBDevice,
+    max_attempts=10
+):
     """
-    Presses BACK until the confirmation appears,
-    then clicks Cancel to reset the page.
+    Press BACK tối đa max_attempts lần.
+    Không lặp vô hạn.
     """
 
     print(
@@ -109,53 +112,52 @@ def escape_to_valid_page(device: ADBDevice):
         f"Page not identified. Escaping..."
     )
 
-    while True:
-
-        device.press_back()
-
-        time.sleep(0.5)
+    for attempt in range(max_attempts):
 
         try:
-
-            frame = device.screenshot()
-
-            cancel_button = locate_image(
-                frame,
-                EXIT_CONFIRM_IMAGE,
-                confidence=0.8
-            )
-
-            if cancel_button:
-
-                x, y = center_of(
-                    cancel_button
-                )
-
-                device.tap(x, y)
-
+            if not device.is_online():
                 print(
                     f"[{device.serial}] "
-                    f"Cancel clicked."
+                    f"Device offline."
                 )
-
-                break
-
-        except Exception as e:
+                return None
 
             print(
                 f"[{device.serial}] "
-                f"Error locating cancel: {e}"
+                f"Pressing BACK "
+                f"({attempt + 1}/{max_attempts})..."
             )
 
-        print(
-            f"[{device.serial}] "
-            f"Still not at confirmation dialog..."
-        )
+            device.press_back()
 
-    time.sleep(1)
+            time.sleep(1)
 
-    return get_current_page(device)
+            page = get_current_page(device)
 
+            if page:
+                print(
+                    f"[{device.serial}] "
+                    f"Successfully returned to "
+                    f"{page} page."
+                )
+
+                return page
+
+        except Exception as e:
+            print(
+                f"[{device.serial}] "
+                f"Escape error: {e}"
+            )
+
+            time.sleep(1)
+
+    print(
+        f"[{device.serial}] "
+        f"Could not identify a valid page "
+        f"after {max_attempts} attempts."
+    )
+
+    return None
 
 def identify_page(device: ADBDevice):
 

@@ -34,7 +34,7 @@ LORDS_PACKAGE = "com.igg.android.lordsmobile"
 
 class DeviceBot:
 
-    def __init__(self, device: ADBDevice):
+    def __init__(self, device):
 
         self.device = device
 
@@ -79,7 +79,24 @@ class DeviceBot:
                     f"Lords Mobile launched."
                 )
 
-                time.sleep(8)
+                for i in range(15):
+
+                    if not self.device.is_online():
+
+                        print(
+                            f"[{self.device.serial}] "
+                            f"Device went offline."
+                        )
+
+                        return
+
+                    print(
+                        f"[{self.device.serial}] "
+                        f"Waiting game... "
+                        f"{i + 1}/15"
+                    )
+
+                    time.sleep(1)
 
             except Exception as e:
 
@@ -103,9 +120,7 @@ class DeviceBot:
 
             scan_map(
                 self.device,
-                pause_event=(
-                    self.pause_scan_event
-                )
+                pause_event=self.pause_scan_event
             )
 
             for _ in range(5):
@@ -137,11 +152,11 @@ class DeviceBot:
 
                         break
 
-                except Exception:
+                except Exception as e:
 
                     print(
                         f"[{self.device.serial}] "
-                        f"cross did not clicked"
+                        f"cross did not click: {e}"
                     )
 
                     time.sleep(1)
@@ -337,25 +352,26 @@ class MultiDeviceBot:
 
         return serials
 
+    # ======================================================
+    # START ALL DEVICES
+    # ======================================================
+
     def start_all(self):
 
         self.refresh_devices()
 
         if not self.bots:
 
-            print(
-                "No ADB devices found."
-            )
+            print("No ADB devices found.")
 
             return
 
         for serial, bot in self.bots.items():
 
-            threading.Thread(
-                target=bot.start_game,
-                daemon=True
-            ).start()
+            # Mở game trước
+            bot.start_game()
 
+            # Sau khi game load xong thì monitor
             threading.Thread(
                 target=bot.monitor,
                 daemon=True
